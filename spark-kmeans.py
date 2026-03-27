@@ -192,8 +192,7 @@ def apply_kmeans(spark, df_features, genre_columns, output_path):
     df_assembled = assembler.transform(df_features)
     
     # PASO 2: StandardScaler - Normalizar a media=0, desv=1
-    # Crítico: asegura que TODOS los géneros contribuyen equitativamente a la distancia euclidiana
-    # Sin esto, géneros con valores más altos dominarían la métrica
+    # Si no se pone esto, géneros con valores más altos dominarían la métrica
     scaler = StandardScaler(inputCol="raw_features", outputCol="features", withStd=True, withMean=True)
     scaler_model = scaler.fit(df_assembled)
     df_scaled = scaler_model.transform(df_assembled)
@@ -223,7 +222,6 @@ def apply_kmeans(spark, df_features, genre_columns, output_path):
             best_predictions = predictions
     
     print(f"\nMejor K: {best_k} con Silhouette Score: {best_score:.4f}")
-    print("  -> K elegido: ofrece balance entre interpretabilidad y calidad de clustering")
     
     # Guardar resultados del mejor modelo
     best_predictions.select("userId", "prediction").write.mode("overwrite").csv(f"{output_path}/clusters_k{best_k}")
@@ -280,7 +278,6 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
     # PASO 4: Calcular weighted_rating promedio por género en cada cluster
     # Esto revela qué géneros definen cada grupo
     print("\nCaracterísticas promedio por cluster (top géneros):")
-    print("  Nota: valores = suma de weighted_ratings / número de usuarios del cluster")
     cluster_profiles = []
     for cluster_id in range(k):
         df_cluster = df_analysis.filter(col("prediction") == cluster_id)
@@ -312,7 +309,6 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
 
     # PASO 6: Mostrar muestra de usuarios - ayuda a entender concretamente quién está en cada cluster
     print("\nMuestra de usuarios por cluster (5 por cluster):")
-    print("  Columnas: cluster | userId | tipo de usuario | género principal | 2do género")
     sample_window = Window.partitionBy("prediction").orderBy("userId")
     df_user_profiles.withColumn("sample_rank", row_number().over(sample_window)) \
         .filter(col("sample_rank") <= 5) \
@@ -322,7 +318,6 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
 
     # PASO 7: Tabla final compacta por cluster
     print("\nResumen limpio por cluster:")
-    print("  Muestra: total usuarios | caracterización género | tipo dominante | % tipo dominante")
     df_cluster_sizes = df_user_profiles.groupBy("prediction", "cluster_profile").count() \
         .withColumnRenamed("count", "total_users")
 
@@ -369,32 +364,24 @@ def main():
         print(f"Output path: {output_path}")
         
         # PASO 1: Cargar datos del dataset MovieLens 100K
-        print("\n[1/5] Cargando datos...")
         df_ratings, df_movies = load_data(spark, bucket_path)
         
         # PASO 2: Análisis exploratorio - entender dataset
-        print("\n[2/5] Análisis exploratorio...")
         exploratory_analysis(df_ratings)
         
         # PASO 3: Construcción de features - preparar datos para clustering
         # Convierte ratings + géneros en matriz usuario-género normalizada
-        print("\n[3/5] Ingeniería de features (weighted ratings por género)...")
         df_features, genre_columns = build_features(df_ratings, df_movies)
         
         # PASO 4: Entrenar K-Means y seleccionar K óptimo
         # Usa distancia euclidiana en espacio normalizado
-        print("\n[4/5] Entrenamiento K-Means (K=3,5,8 con Silhouette Score)...")
         df_predictions, best_k, genre_columns = apply_kmeans(spark, df_features, genre_columns, output_path)
         
         # PASO 5: Análisis e interpretación de clusters
         # Responde: ¿qué usuarios están en cada cluster? ¿qué géneros los caracterizan?
-        print("\n[5/5] Análisis de clusters...")
         analyze_clusters(df_predictions, best_k, df_features, genre_columns)
         
         print("\n✓ Proceso completado exitosamente")
-        print(f"  Clusters: {best_k}")
-        print(f"  Usuarios segmentados: {df_predictions.count()}")
-        print(f"  Resultados guardados en: {output_path}")
         
     finally:
         spark.stop()
