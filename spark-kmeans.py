@@ -1,7 +1,8 @@
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, countDistinct, explode, array, lit, when, sum as spark_sum, avg, struct, array_sort, element_at, format_string
+from pyspark.sql.functions import col, countDistinct, explode, array, lit, when, sum as spark_sum, avg, struct, array_sort, element_at, format_string, row_number, desc, round as spark_round
 from pyspark.sql.types import IntegerType, LongType, StringType, StructField, StructType
+from pyspark.sql.window import Window
 from pyspark.ml.feature import VectorAssembler, StandardScaler
 from pyspark.ml.clustering import KMeans
 from pyspark.ml.evaluation import ClusteringEvaluator
@@ -16,6 +17,7 @@ def build_spark_session() -> SparkSession:
         .master(master_url)
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.default.parallelism", "4")
+        .config("spark.sql.debug.maxToStringFields", "200")
         .config("spark.jars.packages", "com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.11")
         .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
         .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
@@ -231,19 +233,32 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
     df_cluster_profiles = spark.createDataFrame(cluster_profiles, ["prediction", "cluster_profile"])
     df_user_profiles = df_user_profiles.join(df_cluster_profiles, on="prediction", how="left")
 
-    print("\nUsuario -> cluster y caracterización (20 filas):")
-    df_user_profiles.select(
-        "userId",
-        "prediction",
-        "cluster_profile",
-        "top_genre",
-        "second_genre",
-        "user_type"
-    ).orderBy("prediction", "userId").show(20, truncate=False)
+    print("\nMuestra de usuarios por cluster (5 por cluster):")
+    sample_window = Window.partitionBy("prediction").orderBy("userId")
+    df_user_profiles.withColumn("sample_rank", row_number().over(sample_window)) \
+        .filter(col("sample_rank") <= 5) \
+        .select("prediction", "userId", "user_type", "top_genre", "second_genre") \
+        .orderBy("prediction", "userId") \
+        .show(truncate=False)
 
-    print("\nTipos más comunes por cluster:")
-    df_user_profiles.groupBy("prediction", "cluster_profile", "user_type").count() \
-        .orderBy("prediction", col("count").desc()) \
+    print("\nResumen limpio por cluster:")
+    df_cluster_sizes = df_user_profiles.groupBy("prediction", "cluster_profile").count() \
+        .withColumnRenamed("count", "total_users")
+
+    df_type_counts = df_user_profiles.groupBy("prediction", "user_type").count()
+    dominant_window = Window.partitionBy("prediction").orderBy(desc("count"), col("user_type"))
+    df_dominant_type = df_type_counts.withColumn("rank", row_number().over(dominant_window)) \
+        .filter(col("rank") == 1) \
+        .select(
+            "prediction",
+            col("user_type").alias("tipo_dominante"),
+            col("count").alias("dominant_users")
+        )
+
+    df_cluster_sizes.join(df_dominant_type, on="prediction", how="left") \
+        .withColumn("pct_tipo_dominante", spark_round(col("dominant_users") * lit(100.0) / col("total_users"), 1)) \
+        .select("prediction", "total_users", "cluster_profile", "tipo_dominante", "pct_tipo_dominante") \
+        .orderBy("prediction") \
         .show(truncate=False)
 
 
