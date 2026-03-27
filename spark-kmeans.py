@@ -1,6 +1,6 @@
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, countDistinct, explode, array, lit, when, sum as spark_sum, avg
+from pyspark.sql.functions import col, countDistinct, explode, array, lit, when, sum as spark_sum, avg, struct, array_sort, element_at, format_string
 from pyspark.sql.types import IntegerType, LongType, StringType, StructField, StructType
 from pyspark.ml.feature import VectorAssembler, StandardScaler
 from pyspark.ml.clustering import KMeans
@@ -181,9 +181,30 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
     
     # Unir con features originales para análisis
     df_analysis = df_predictions.select("userId", "prediction").join(df_features, on="userId")
-    
-    # Calcular promedios por cluster para cada género
+
+    # Perfil de usuario: géneros top y tipo estimado
+    genre_scores = [struct(col(g).alias("score"), lit(g).alias("genre")) for g in genre_columns]
+    df_user_profiles = (
+        df_analysis
+        .withColumn("sorted_genres", array_sort(array(*genre_scores)))
+        .withColumn("top_genre", element_at(col("sorted_genres"), -1).getField("genre"))
+        .withColumn("top_score", element_at(col("sorted_genres"), -1).getField("score"))
+        .withColumn("second_genre", element_at(col("sorted_genres"), -2).getField("genre"))
+        .withColumn("second_score", element_at(col("sorted_genres"), -2).getField("score"))
+        .withColumn(
+            "user_type",
+            when(col("top_score") <= 1.0, lit("Perfil ligero"))
+            .when(
+                (col("top_score") - col("second_score")) <= (col("top_score") * lit(0.15)),
+                format_string("Mixto: %s y %s", col("top_genre"), col("second_genre"))
+            )
+            .otherwise(format_string("Fan de %s", col("top_genre")))
+        )
+    )
+
+    # Calcular promedios por cluster para cada género y construir caracterización
     print("\nCaracterísticas promedio por cluster (top géneros):")
+    cluster_profiles = []
     for cluster_id in range(k):
         df_cluster = df_analysis.filter(col("prediction") == cluster_id)
         
@@ -201,14 +222,41 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
         for genre, avg_val in genre_avgs[:5]:
             print(f"    - {genre}: {avg_val:.2f}")
 
+        top3 = [genre for genre, _ in genre_avgs[:3]]
+        cluster_profile = f"Predomina {top3[0]} | Secundarios: {top3[1]}, {top3[2]}"
+        cluster_profiles.append((cluster_id, cluster_profile))
+        print(f"  Caracterización: {cluster_profile}")
+
+    spark = df_predictions.sparkSession
+    df_cluster_profiles = spark.createDataFrame(cluster_profiles, ["prediction", "cluster_profile"])
+    df_user_profiles = df_user_profiles.join(df_cluster_profiles, on="prediction", how="left")
+
+    print("\nUsuario -> cluster y caracterización (20 filas):")
+    df_user_profiles.select(
+        "userId",
+        "prediction",
+        "cluster_profile",
+        "top_genre",
+        "second_genre",
+        "user_type"
+    ).orderBy("prediction", "userId").show(20, truncate=False)
+
+    print("\nTipos más comunes por cluster:")
+    df_user_profiles.groupBy("prediction", "cluster_profile", "user_type").count() \
+        .orderBy("prediction", col("count").desc()) \
+        .show(truncate=False)
+
 
 def main():
     spark = build_spark_session()
+    log_level = os.getenv("SPARK_LOG_LEVEL", "WARN").upper()
+    spark.sparkContext.setLogLevel(log_level)
     bucket_path = get_bucket_path()
     output_path = get_output_path()
     
     try:
         print(f"Spark Master: {spark.sparkContext.master}")
+        print(f"Spark log level: {log_level}")
         print(f"Input path: {bucket_path}")
         print(f"Output path: {output_path}")
         
