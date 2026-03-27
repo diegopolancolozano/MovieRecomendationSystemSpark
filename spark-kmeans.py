@@ -16,6 +16,10 @@ def build_spark_session() -> SparkSession:
         .master(master_url)
         .config("spark.sql.shuffle.partitions", "4")
         .config("spark.default.parallelism", "4")
+        .config("spark.jars.packages", "com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.11")
+        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+        .config("spark.hadoop.google.cloud.auth.service.account.enable", "true")
         .getOrCreate()
     )
 
@@ -25,7 +29,7 @@ def get_bucket_path() -> str:
     if bucket:
         bucket = bucket.replace("gs://", "").strip("/\\")
         return f"gs://{bucket}/ml-100k"
-    return "data/ml-100k/ml-100k"
+    return "data/ml-100k"
 
 
 def get_output_path() -> str:
