@@ -1,6 +1,6 @@
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, countDistinct, explode, array, lit, when, sum as spark_sum, avg, struct, array_sort, element_at, format_string, row_number, desc, round as spark_round
+from pyspark.sql.functions import col, countDistinct, count, explode, array, lit, when, sum as spark_sum, avg, struct, array_sort, element_at, format_string, row_number, desc, round as spark_round
 from pyspark.sql.types import IntegerType, LongType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 from pyspark.ml.feature import VectorAssembler, StandardScaler
@@ -124,6 +124,28 @@ def exploratory_analysis(df_ratings):
     print(f"\nRating promedio: {avg_rating:.2f}")
 
 
+def build_movie_genre_mapping(df_movies, genre_columns):
+    """
+    Crea una tabla movieId-genre con normalización por cantidad de géneros.
+
+    Cada película se expande en N filas (una por género activo) y guarda genre_count
+    para repartir peso cuando una película pertenece a múltiples géneros.
+    """
+    genre_exprs = [when(col(g) == 1, lit(g)) for g in genre_columns]
+    genre_count_col = sum(col(g) for g in genre_columns)
+
+    return (
+        df_movies
+        .select(
+            "movieId",
+            "title",
+            genre_count_col.alias("genre_count"),
+            explode(array(*genre_exprs)).alias("genre")
+        )
+        .filter(col("genre").isNotNull())
+    )
+
+
 def build_features(df_ratings, df_movies):
     """
     CONSTRUCTION DE FEATURES PARA K-MEANS
@@ -131,11 +153,12 @@ def build_features(df_ratings, df_movies):
     Entrada: ratings (userId, movieId, rating) + movies (movieId, genres)
     Salida: matriz usuario-género con weighted ratings
     
-    Proceso:
-    1. Filtrar ratings positivos (>3, es decir 4-5) para evitar ruido de reseñas neutras/negativas.
-    2. Calcular weighted_rating = rating / num_géneros por película.
-    3. Pivotear por género para crear 18 features por usuario.
-    4. Rezulta en 18D feature space: [Drama_score, Comedy_score, ..., Western_score]
+     Proceso:
+     1. Expandir películas por género con normalización por multi-género.
+     2. Calcular para cada usuario-género el porcentaje positivo ponderado:
+         positive_rate = weighted_positive / weighted_total
+     3. Aplicar suavizado bayesiano para géneros con pocos datos por usuario.
+     4. Pivotear por género para crear 18 features por usuario en rango [0, 1].
     """
     genre_columns = [
         "Action", "Adventure", "Animation", "Children", "Comedy", "Crime",
@@ -143,33 +166,232 @@ def build_features(df_ratings, df_movies):
         "Mystery", "Romance", "SciFi", "Thriller", "War", "Western"
     ]
 
-    # PASO 1: Filtrar SOLO ratings positivos (rating > 3 significa 4 o 5)
-    # Justificación: Captures true preferences, elimina ruido de ratings neutrales/negativos
-    df_positive = df_ratings.filter(col("rating") > 3)
+    # Hiperparámetro de suavizado para evitar sesgo con pocos ratings.
+    alpha = float(os.getenv("GENRE_SMOOTHING_ALPHA", "5"))
 
-    # PASO 2: Preparar mapping género-película
-    # Cada película puede tener múltiples géneros; necesitamos expandir.
-    genre_exprs = [when(col(g) == 1, lit(g)) for g in genre_columns]
-    genre_count_col = sum(col(g) for g in genre_columns)
+    # PASO 1: Preparar mapping género-película.
+    df_movie_genres = build_movie_genre_mapping(df_movies, genre_columns)
 
-    df_movie_genres = df_movies.select(
-        "movieId",
-        genre_count_col.alias("genre_count"),  # Ej: película "Drama+Comedy" tiene genre_count=2
-        explode(array(*genre_exprs)).alias("genre")  # Explode: una fila por género
-    ).filter(col("genre").isNotNull())
+    # PASO 2: Métricas usuario-género ponderadas por cantidad de géneros.
+    # - weighted_positive suma 1/genre_count cuando rating > 3.
+    # - weighted_total suma 1/genre_count para toda reseña.
+    df_user_genre_stats = (
+        df_ratings
+        .join(df_movie_genres.select("movieId", "genre", "genre_count"), on="movieId")
+        .withColumn("is_positive", when(col("rating") > 3, lit(1.0)).otherwise(lit(0.0)))
+        .withColumn("weighted_positive", col("is_positive") / col("genre_count"))
+        .withColumn("weighted_total", lit(1.0) / col("genre_count"))
+        .groupBy("userId", "genre")
+        .agg(
+            spark_sum("weighted_positive").alias("positive_weight"),
+            spark_sum("weighted_total").alias("total_weight")
+        )
+    )
 
-    # PASO 3: Calcular WEIGHTED RATING por género
-    # weighted_rating = rating / genre_count normaliza impacto de películas multi-género
-    # Ej: Si usuario ratea 5 a "Drama+Comedy", contribuye 2.5 a Drama y 2.5 a Comedy, no 5 a cada una
-    df_user_genre = df_positive.join(df_movie_genres, on="movieId") \
-        .withColumn("weighted_rating", col("rating") / col("genre_count")) \
-        .groupBy("userId").pivot("genre").agg(spark_sum("weighted_rating")).fillna(0)  # fillna(0): usuarios sin ratings en ciertos géneros
+    # PASO 3: Prior global por género para suavizado bayesiano.
+    df_global_genre_rates = (
+        df_user_genre_stats
+        .groupBy("genre")
+        .agg((spark_sum("positive_weight") / spark_sum("total_weight")).alias("global_positive_rate"))
+    )
+
+    # smoothed_rate = (positive_weight + alpha * global_positive_rate) / (total_weight + alpha)
+    df_user_genre_smoothed = (
+        df_user_genre_stats
+        .join(df_global_genre_rates, on="genre", how="left")
+        .withColumn(
+            "smoothed_positive_rate",
+            (col("positive_weight") + lit(alpha) * col("global_positive_rate")) /
+            (col("total_weight") + lit(alpha))
+        )
+    )
+
+    # PASO 4: Pivot por género para usar en clustering/recomendación.
+    df_user_genre = (
+        df_user_genre_smoothed
+        .groupBy("userId")
+        .pivot("genre")
+        .agg(avg("smoothed_positive_rate"))
+        .fillna(0.0)
+    )
+
+    # Garantizar las 18 columnas aunque un género sea raro en un split concreto.
+    for genre in genre_columns:
+        if genre not in df_user_genre.columns:
+            df_user_genre = df_user_genre.withColumn(genre, lit(0.0))
+
+    df_user_genre = df_user_genre.select("userId", *genre_columns)
 
     print(f"\n=== FEATURES CONSTRUIDOS ===")
     print(f"Usuarios con features: {df_user_genre.count()}")
     print(f"Géneros (features): {len(genre_columns)}")
+    print(f"Suavizado bayesiano alpha: {alpha}")
     
-    return df_user_genre, genre_columns
+    return df_user_genre, genre_columns, df_movie_genres
+
+
+def build_movie_quality_profiles(df_ratings, df_movies, df_movie_genres, output_path):
+    """
+    Calcula calidad de películas a nivel reseña y ranking por género.
+
+    Métricas por película:
+    - avg_rating
+    - positive_ratio (rating > 3)
+    - rating_count
+    - bayesian_rating para estabilizar películas con pocos votos
+    - quality_score normalizado [0, 1]
+    """
+    beta = float(os.getenv("MOVIE_BAYES_BETA", "20"))
+    top_per_genre = int(os.getenv("TOP_MOVIES_PER_GENRE", "10"))
+
+    df_movie_stats = (
+        df_ratings
+        .groupBy("movieId")
+        .agg(
+            avg("rating").alias("avg_rating"),
+            (spark_sum(when(col("rating") > 3, lit(1.0)).otherwise(lit(0.0))) / count("*")).alias("positive_ratio"),
+            count("*").alias("rating_count")
+        )
+    )
+
+    global_avg_rating = df_ratings.select(avg("rating").alias("global_avg_rating")).first()["global_avg_rating"]
+
+    df_movie_scores = (
+        df_movie_stats
+        .withColumn(
+            "bayesian_rating",
+            (col("avg_rating") * col("rating_count") + lit(beta * global_avg_rating)) /
+            (col("rating_count") + lit(beta))
+        )
+        .withColumn("quality_score", col("bayesian_rating") / lit(5.0))
+        .join(df_movies.select("movieId", "title"), on="movieId", how="left")
+    )
+
+    genre_rank_window = Window.partitionBy("genre").orderBy(
+        desc("quality_score"),
+        desc("positive_ratio"),
+        desc("rating_count")
+    )
+
+    df_top_movies_by_genre = (
+        df_movie_scores
+        .join(df_movie_genres.select("movieId", "genre").dropDuplicates(), on="movieId", how="inner")
+        .withColumn("rank_in_genre", row_number().over(genre_rank_window))
+        .filter(col("rank_in_genre") <= top_per_genre)
+        .select(
+            "genre",
+            "rank_in_genre",
+            "movieId",
+            "title",
+            spark_round(col("avg_rating"), 3).alias("avg_rating"),
+            spark_round(col("positive_ratio"), 3).alias("positive_ratio"),
+            "rating_count",
+            spark_round(col("bayesian_rating"), 3).alias("bayesian_rating")
+        )
+        .orderBy("genre", "rank_in_genre")
+    )
+
+    df_movie_scores.write.mode("overwrite").csv(f"{output_path}/movie_quality_scores")
+    df_top_movies_by_genre.write.mode("overwrite").csv(f"{output_path}/top_movies_by_genre")
+
+    print("\n=== CALIDAD DE PELÍCULAS (NIVEL RESEÑAS) ===")
+    print(f"Promedio global rating: {global_avg_rating:.3f}")
+    print(f"Bayesian beta: {beta}")
+    print(f"Top por género guardado en: {output_path}/top_movies_by_genre")
+
+    return df_movie_scores, df_top_movies_by_genre
+
+
+def build_user_recommendations(df_ratings, df_user_genre, genre_columns, df_movie_genres, df_movie_scores, output_path):
+    """
+    Genera recomendaciones personalizadas Top-N por usuario.
+
+    Estrategia híbrida:
+    final_score = w_pref * affinity_score + w_quality * quality_score + w_positive * positive_ratio
+
+    - affinity_score: afinidad usuario-película derivada de preferencias por género.
+    - quality_score: calidad global estabilizada de película (bayesiana).
+    - positive_ratio: proporción global de reseñas positivas de la película.
+    """
+    top_n = int(os.getenv("TOP_N_RECOMMENDATIONS", "10"))
+    w_pref = float(os.getenv("WEIGHT_PREFERENCE", "0.6"))
+    w_quality = float(os.getenv("WEIGHT_QUALITY", "0.3"))
+    w_positive = float(os.getenv("WEIGHT_POSITIVE", "0.1"))
+
+    # Normalizar pesos para robustez cuando se cambian por entorno.
+    weight_sum = w_pref + w_quality + w_positive
+    if weight_sum == 0:
+        w_pref, w_quality, w_positive = 0.6, 0.3, 0.1
+    else:
+        w_pref, w_quality, w_positive = w_pref / weight_sum, w_quality / weight_sum, w_positive / weight_sum
+
+    # Unpivot de matriz usuario-género -> formato largo (userId, genre, genre_preference).
+    preference_structs = [struct(lit(g).alias("genre"), col(g).alias("genre_preference")) for g in genre_columns]
+    df_user_genre_long = (
+        df_user_genre
+        .select("userId", explode(array(*preference_structs)).alias("pref"))
+        .select("userId", col("pref.genre").alias("genre"), col("pref.genre_preference").alias("genre_preference"))
+    )
+
+    # Afinidad usuario-película como promedio de preferencias de sus géneros.
+    df_user_movie_affinity = (
+        df_user_genre_long
+        .join(df_movie_genres.select("movieId", "genre").dropDuplicates(), on="genre", how="inner")
+        .groupBy("userId", "movieId")
+        .agg(avg("genre_preference").alias("affinity_score"))
+    )
+
+    # Excluir películas ya vistas por cada usuario.
+    df_seen_movies = df_ratings.select("userId", "movieId").distinct()
+
+    df_candidates = (
+        df_user_movie_affinity
+        .join(
+            df_movie_scores.select("movieId", "title", "quality_score", "positive_ratio", "rating_count"),
+            on="movieId",
+            how="inner"
+        )
+        .join(df_seen_movies, on=["userId", "movieId"], how="left_anti")
+        .withColumn(
+            "final_score",
+            lit(w_pref) * col("affinity_score") +
+            lit(w_quality) * col("quality_score") +
+            lit(w_positive) * col("positive_ratio")
+        )
+    )
+
+    rank_window = Window.partitionBy("userId").orderBy(
+        desc("final_score"),
+        desc("quality_score"),
+        desc("rating_count")
+    )
+
+    df_top_recommendations = (
+        df_candidates
+        .withColumn("rank", row_number().over(rank_window))
+        .filter(col("rank") <= top_n)
+        .select(
+            "userId",
+            "rank",
+            "movieId",
+            "title",
+            spark_round(col("final_score"), 4).alias("final_score"),
+            spark_round(col("affinity_score"), 4).alias("affinity_score"),
+            spark_round(col("quality_score"), 4).alias("quality_score"),
+            spark_round(col("positive_ratio"), 4).alias("positive_ratio"),
+            "rating_count"
+        )
+        .orderBy("userId", "rank")
+    )
+
+    df_top_recommendations.write.mode("overwrite").csv(f"{output_path}/recommendations_top{top_n}")
+
+    print("\n=== RECOMENDACIONES PERSONALIZADAS ===")
+    print(f"Pesos usados: preference={w_pref:.2f}, quality={w_quality:.2f}, positive={w_positive:.2f}")
+    print(f"Top-N por usuario: {top_n}")
+    print(f"Recomendaciones guardadas en: {output_path}/recommendations_top{top_n}")
+
+    return df_top_recommendations
 
 
 def apply_kmeans(spark, df_features, genre_columns, output_path):
@@ -185,7 +407,7 @@ def apply_kmeans(spark, df_features, genre_columns, output_path):
        -> Rango [-1, 1]; >0.5 indica clusters bien definidos
     5. Seleccionar K con mejor Silhouette Score
     """
-    input_cols = [c for c in df_features.columns if c != "userId"]
+    input_cols = [c for c in genre_columns if c in df_features.columns]
     
     # PASO 1: VectorAssembler - Convertir 18 columnas en UN vector denso
     assembler = VectorAssembler(inputCols=input_cols, outputCol="raw_features")
@@ -253,8 +475,8 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
 
     # PASO 3: Perfilar cada usuario por top 2 géneros y categoría de preferencia
     # Lógica:
-    # - Si top_score <= 1.0: usuario con bajo consumo global -> "Perfil ligero"
-    # - Si diferencia entre top2 <= 15%: usuario con preferencias distribuidas -> "Mixto"
+    # - Si top_score <= 45%: usuario con preferencia débil -> "Perfil ligero"
+    # - Si diferencia entre top2 <= 10 puntos: usuario con preferencias distribuidas -> "Mixto"
     # - Sino: usuario con género dominante -> "Fan de [género]"
     genre_scores = [struct(col(g).alias("score"), lit(g).alias("genre")) for g in genre_columns]
     df_user_profiles = (
@@ -266,9 +488,9 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
         .withColumn("second_score", element_at(col("sorted_genres"), -2).getField("score"))
         .withColumn(
             "user_type",
-            when(col("top_score") <= 1.0, lit("Perfil ligero"))  # Bajo consumo
+            when(col("top_score") <= 0.45, lit("Perfil ligero"))  # Afinidad baja (escala 0-1)
             .when(
-                (col("top_score") - col("second_score")) <= (col("top_score") * lit(0.15)),
+                (col("top_score") - col("second_score")) <= lit(0.10),
                 format_string("Mixto: %s y %s", col("top_genre"), col("second_genre"))  # Preferencias balanceadas
             )
             .otherwise(format_string("Fan de %s", col("top_genre")))  # Género dominante
@@ -294,7 +516,7 @@ def analyze_clusters(df_predictions, k, df_features, genre_columns):
         print(f"\nCluster {cluster_id} ({df_cluster.count()} usuarios):")
         print("  Top 5 géneros preferidos:")
         for genre, avg_val in genre_avgs[:5]:
-            print(f"    - {genre}: {avg_val:.2f}")
+            print(f"    - {genre}: {avg_val:.2%}")
 
         # Crear descripción compacta de cada cluster (top 3 géneros)
         top3 = [genre for genre, _ in genre_avgs[:3]]
@@ -346,10 +568,12 @@ def main():
     1. build_spark_session() - Conectar a cluster Spark y configurar GCS
     2. load_data() - Cargar MovieLens ratings y movies desde GCS
     3. exploratory_analysis() - EDA: estadísticas básicas de dataset
-    4. build_features() - Feature engineering: weighted ratings por género
+    4. build_features() - Feature engineering: % positivos por género (suavizado)
     5. apply_kmeans() - Entrenar K-Means, seleccionar K óptimo (Silhouette Score)
     6. analyze_clusters() - Interpretación: qué caracteriza cada cluster
-    7. Guardar resultados en GCS
+    7. build_movie_quality_profiles() - Calidad película por reseñas + top por género
+    8. build_user_recommendations() - Top-N personalizado por usuario
+    9. Guardar resultados en GCS
     """
     spark = build_spark_session()
     log_level = os.getenv("SPARK_LOG_LEVEL", "WARN").upper()
@@ -371,7 +595,7 @@ def main():
         
         # PASO 3: Construcción de features - preparar datos para clustering
         # Convierte ratings + géneros en matriz usuario-género normalizada
-        df_features, genre_columns = build_features(df_ratings, df_movies)
+        df_features, genre_columns, df_movie_genres = build_features(df_ratings, df_movies)
         
         # PASO 4: Entrenar K-Means y seleccionar K óptimo
         # Usa distancia euclidiana en espacio normalizado
@@ -380,6 +604,19 @@ def main():
         # PASO 5: Análisis e interpretación de clusters
         # Responde: ¿qué usuarios están en cada cluster? ¿qué géneros los caracterizan?
         analyze_clusters(df_predictions, best_k, df_features, genre_columns)
+
+        # PASO 6: Calidad de películas a nivel reseña y ranking por género
+        df_movie_scores, _ = build_movie_quality_profiles(df_ratings, df_movies, df_movie_genres, output_path)
+
+        # PASO 7: Recomendaciones personalizadas Top-N por usuario
+        build_user_recommendations(
+            df_ratings,
+            df_features,
+            genre_columns,
+            df_movie_genres,
+            df_movie_scores,
+            output_path
+        )
         
         print("\n✓ Proceso completado exitosamente")
         
