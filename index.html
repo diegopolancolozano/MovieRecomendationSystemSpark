@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MovieLens Recommendation Studio</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: rgba(18, 22, 31, 0.9);
+      --panel-2: rgba(23, 28, 39, 0.92);
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #eef2ff;
+      --muted: #a6afc3;
+      --accent: #6ee7ff;
+      --accent-2: #8b5cf6;
+      --good: #5eead4;
+      --warn: #fbbf24;
+      --danger: #fb7185;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      --radius: 20px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(139, 92, 246, 0.30), transparent 28%),
+        radial-gradient(circle at top right, rgba(110, 231, 255, 0.22), transparent 26%),
+        linear-gradient(160deg, #090b10 0%, #10131a 42%, #0d1118 100%);
+      font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+    }
+
+    .shell {
+      width: min(1400px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .hero-card,
+    .panel,
+    .card,
+    .table-wrap,
+    .raw-json {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .hero-card {
+      padding: 28px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      inset: auto -40px -100px auto;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(110, 231, 255, 0.28), transparent 70%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--accent);
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 4rem);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+
+    .lead {
+      margin: 16px 0 0;
+      max-width: 70ch;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.7;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat {
+      padding: 18px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03));
+      border: 1px solid var(--border);
+    }
+
+    .stat .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 8px;
+    }
+
+    .stat .value {
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      padding: 18px;
+      position: sticky;
+      top: 18px;
+    }
+
+    .panel h2,
+    .section h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+      margin: 0 0 16px;
+    }
+
+    .mode-toggle {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .mode-toggle button {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+
+    .mode-toggle button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(110, 231, 255, 0.4);
+    }
+
+    .mode-toggle button.active {
+      background: linear-gradient(135deg, rgba(110, 231, 255, 0.18), rgba(139, 92, 246, 0.20));
+      border-color: rgba(110, 231, 255, 0.55);
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+      margin: 14px 0 8px;
+    }
+
+    input,
+    textarea,
+    select {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 12px 14px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+
+    input:focus,
+    textarea:focus,
+    select:focus {
+      border-color: rgba(110, 231, 255, 0.6);
+      box-shadow: 0 0 0 3px rgba(110, 231, 255, 0.12);
+    }
+
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      font-family: inherit;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
+
+    .button {
+      border: 0;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #081019;
+      font-weight: 700;
+      padding: 12px 16px;
+      border-radius: 14px;
+      cursor: pointer;
+      box-shadow: 0 12px 25px rgba(110, 231, 255, 0.18);
+    }
+
+    .button.secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+      border: 1px solid var(--border);
+      box-shadow: none;
+    }
+
+    .button:hover { filter: brightness(1.04); }
+
+    .sections {
+      display: grid;
+      gap: 18px;
+    }
+
+    .section {
+      padding: 18px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .summary-card {
+      padding: 16px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+      border: 1px solid var(--border);
+    }
+
+    .summary-card .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .summary-card .value {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .card {
+      padding: 14px;
+    }
+
+    .card-title {
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .card-meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .pill-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      margin-top: 14px;
+      max-height: 440px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 680px;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: rgba(18, 22, 31, 0.98);
+      z-index: 1;
+      color: #dbeafe;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 11px;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .muted { color: var(--muted); }
+    .good { color: var(--good); }
+    .warn { color: var(--warn); }
+    .danger { color: var(--danger); }
+
+    .raw-json {
+      margin-top: 14px;
+      padding: 14px;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #d6e4ff;
+      font-size: 12px;
+      line-height: 1.6;
+      max-height: 420px;
+      overflow: auto;
+    }
+
+    .hidden { display: none !important; }
+
+    .status {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .status.error {
+      border-color: rgba(251, 113, 133, 0.35);
+      color: #fecdd3;
+      background: rgba(251, 113, 133, 0.08);
+    }
+
+    @media (max-width: 1100px) {
+      .hero, .grid, .summary { grid-template-columns: 1fr; }
+      .panel { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="hero-card">
+        <div class="eyebrow">MovieLens 1M · Explainable Recommendations</div>
+        <h1>Recomendador con cluster, matriz de gustos y trazabilidad completa.</h1>
+        <p class="lead">
+          Consulta por <strong>userId</strong> o por películas marcadas. El panel muestra el cluster asignado,
+          la matriz de gustos del usuario, la matriz promedio del cluster y el detalle de rating que usó el sistema
+          para ordenar las recomendaciones.
+        </p>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <div class="label">Modo</div>
+          <div class="value">Usuario / Películas</div>
+        </div>
+        <div class="stat">
+          <div class="label">Backend</div>
+          <div class="value">Python HTTP</div>
+        </div>
+        <div class="stat">
+          <div class="label">Salida</div>
+          <div class="value">JSON + Front</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <aside class="panel">
+        <h2>Consulta</h2>
+        <p class="hint">Selecciona un modo y envía la consulta al API local. Si usas películas marcadas, puedes pasar ratings opcionales en JSON.</p>
+
+        <div class="mode-toggle">
+          <button id="modeUser" class="active" type="button">Por userId</button>
+          <button id="modeSeed" type="button">Por películas</button>
+        </div>
+
+        <label for="userId">User ID</label>
+        <input id="userId" type="number" min="1" placeholder="Ej. 12" value="12" />
+
+        <label for="movieIds">Movie IDs marcadas</label>
+        <textarea id="movieIds" placeholder="Ej. 1196, 260, 858">1196, 260, 858</textarea>
+
+        <label for="ratings">Ratings opcionales para películas marcadas (JSON)</label>
+        <textarea id="ratings" placeholder='{"1196": 5, "260": 4}'>{"1196": 5, "260": 4, "858": 4}</textarea>
+
+        <label for="kValue">K</label>
+        <select id="kValue">
+          <option value="">Usar best_k</option>
+          <option value="3">3</option>
+          <option value="5">5</option>
+          <option value="8">8</option>
+          <option value="10">10</option>
+        </select>
+
+        <label for="topN">Top N</label>
+        <input id="topN" type="number" min="1" max="50" value="10" />
+
+        <div class="actions">
+          <button id="runBtn" class="button" type="button">Recomendar</button>
+          <button id="clearBtn" class="button secondary" type="button">Limpiar</button>
+        </div>
+
+        <div id="status" class="status">Listo para consultar el API.</div>
+      </aside>
+
+      <main class="sections">
+        <section class="section">
+          <h2>Resumen</h2>
+          <div id="summary" class="summary">
+            <div class="summary-card"><div class="label">Estado</div><div class="value">Sin consulta</div></div>
+            <div class="summary-card"><div class="label">Cluster</div><div class="value">-</div></div>
+            <div class="summary-card"><div class="label">Seed movies</div><div class="value">-</div></div>
+            <div class="summary-card"><div class="label">K</div><div class="value">-</div></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Películas semilla</h2>
+          <div id="seedMovies" class="card-grid"></div>
+        </section>
+
+        <section class="section">
+          <h2>Matriz de gustos del usuario</h2>
+          <div id="userMatrixWrap" class="table-wrap hidden">
+            <table id="userMatrix"></table>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Matriz de gustos del cluster</h2>
+          <div id="clusterMatrixWrap" class="table-wrap hidden">
+            <table id="clusterMatrix"></table>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Recomendaciones</h2>
+          <div id="recommendations" class="card-grid"></div>
+        </section>
+
+        <section class="section">
+          <h2>Payload completo</h2>
+          <div class="raw-json">
+            <pre id="rawJson">Aquí aparecerá la respuesta completa del API.</pre>
+          </div>
+        </section>
+      </main>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      mode: "user",
+      lastPayload: null,
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function setStatus(message, kind = "") {
+      const el = $("status");
+      el.textContent = message;
+      el.className = kind ? `status ${kind}` : "status";
+    }
+
+    function setMode(mode) {
+      state.mode = mode;
+      $("modeUser").classList.toggle("active", mode === "user");
+      $("modeSeed").classList.toggle("active", mode === "seed");
+      $("userId").disabled = mode !== "user";
+      $("movieIds").disabled = mode !== "seed";
+      $("ratings").disabled = mode !== "seed";
+    }
+
+    function clearSections() {
+      $("summary").innerHTML = `
+        <div class="summary-card"><div class="label">Estado</div><div class="value">Sin consulta</div></div>
+        <div class="summary-card"><div class="label">Cluster</div><div class="value">-</div></div>
+        <div class="summary-card"><div class="label">Seed movies</div><div class="value">-</div></div>
+        <div class="summary-card"><div class="label">K</div><div class="value">-</div></div>
+      `;
+      $("seedMovies").innerHTML = "";
+      $("recommendations").innerHTML = "";
+      $("userMatrixWrap").classList.add("hidden");
+      $("clusterMatrixWrap").classList.add("hidden");
+      $("rawJson").textContent = "Aquí aparecerá la respuesta completa del API.";
+      state.lastPayload = null;
+      setStatus("Listo para consultar el API.");
+    }
+
+    function renderSummary(payload) {
+      const clusterText = payload.cluster ? `#${payload.cluster.id} · ${payload.cluster.user_count} users` : "-";
+      const seedCount = payload.profile?.seed_movies?.length ?? payload.seed_movies?.length ?? 0;
+      const kValue = payload.k ?? "-";
+      const mode = payload.mode === "user" ? "Usuario" : "Películas";
+      $("summary").innerHTML = `
+        <div class="summary-card"><div class="label">Estado</div><div class="value good">${mode}</div></div>
+        <div class="summary-card"><div class="label">Cluster</div><div class="value">${escapeHtml(clusterText)}</div></div>
+        <div class="summary-card"><div class="label">Seed movies</div><div class="value">${seedCount}</div></div>
+        <div class="summary-card"><div class="label">K</div><div class="value">${escapeHtml(kValue)}</div></div>
+      `;
+    }
+
+    function cardGenres(genres) {
+      return (genres || []).map((genre) => `<span class="pill">${escapeHtml(genre)}</span>`).join("");
+    }
+
+    function renderSeedMovies(payload) {
+      const items = payload.profile?.seed_movies || payload.seed_movies || [];
+      const container = $("seedMovies");
+      if (!items.length) {
+        container.innerHTML = '<div class="card"><div class="card-meta">No hay películas semilla para mostrar.</div></div>';
+        return;
+      }
+
+      container.innerHTML = items.map((item) => `
+        <article class="card">
+          <div class="card-title">${escapeHtml(item.title)}</div>
+          <div class="card-meta">
+            <div>Movie ID: ${escapeHtml(item.movieId)}</div>
+            <div>Rating: ${escapeHtml(item.rating ?? item.weight ?? "-")}</div>
+            <div>Weight: ${escapeHtml(item.weight ?? "-")}</div>
+          </div>
+          <div class="pill-row">${cardGenres(item.genres)}</div>
+        </article>
+      `).join("");
+    }
+
+    function renderMatrix(tableId, rows) {
+      const table = $(tableId);
+      if (!rows || !rows.length) {
+        table.innerHTML = "";
+        return;
+      }
+
+      const body = rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.genre)}</td>
+          <td>${escapeHtml(row.weight)}</td>
+          <td>${escapeHtml(row.share)}</td>
+        </tr>
+      `).join("");
+
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Género</th>
+            <th>Peso</th>
+            <th>Share</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      `;
+    }
+
+    function renderMatrices(payload) {
+      const userMatrix = payload.profile?.user_taste_matrix || payload.taste_matrix || [];
+      const clusterMatrix = payload.profile?.cluster_taste_matrix || [];
+
+      $("userMatrixWrap").classList.toggle("hidden", !userMatrix.length);
+      $("clusterMatrixWrap").classList.toggle("hidden", !clusterMatrix.length);
+      renderMatrix("userMatrix", userMatrix);
+      renderMatrix("clusterMatrix", clusterMatrix);
+    }
+
+    function renderRecommendations(payload) {
+      const items = payload.recommendations || [];
+      const container = $("recommendations");
+      if (!items.length) {
+        container.innerHTML = '<div class="card"><div class="card-meta">No hay recomendaciones para mostrar.</div></div>';
+        return;
+      }
+
+      container.innerHTML = items.map((item) => {
+        const why = item.why || {};
+        const rating = item.movie_rating || {};
+        const tags = [
+          ...new Set([...(why.matched_user_genres || []), ...(why.matched_cluster_genres || [])])
+        ];
+        return `
+          <article class="card">
+            <div class="card-title">#${escapeHtml(item.rank ?? item.movieId)} ${escapeHtml(item.title)}</div>
+            <div class="card-meta">
+              <div>Movie ID: ${escapeHtml(item.movieId)}</div>
+              <div>Cluster: ${escapeHtml(item.cluster ?? payload.cluster?.id ?? "-")}</div>
+              <div>Ranking score: ${escapeHtml(item.ranking_score ?? item.score ?? "-")}</div>
+              <div>Affinity score: ${escapeHtml(item.affinity_score ?? item.affinity_norm ?? "-")}</div>
+              <div>Avg rating: ${escapeHtml(item.cluster_avg_rating ?? item.avg_rating ?? rating.avg_rating ?? "-")}</div>
+              <div>Ratings count: ${escapeHtml(item.cluster_num_ratings ?? item.ratings_count ?? rating.ratings_count ?? "-")}</div>
+            </div>
+            <div class="pill-row">${cardGenres(item.genres ? item.genres.split("|") : [])}</div>
+            <div class="pill-row">${cardGenres(tags)}</div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    function renderRawJson(payload) {
+      $("rawJson").textContent = JSON.stringify(payload, null, 2);
+    }
+
+    async function submit() {
+      try {
+        setStatus("Consultando recomendaciones...");
+        const topN = Number($("topN").value || 10);
+        const body = { top_n: topN };
+        const kValue = $("kValue").value;
+        if (kValue) {
+          body.k = Number(kValue);
+        }
+
+        if (state.mode === "user") {
+          body.userId = Number($("userId").value);
+          if (!body.userId) {
+            throw new Error("Ingresa un userId válido.");
+          }
+        } else {
+          const movieIds = $("movieIds").value
+            .split(/[\s,]+/)
+            .map((value) => Number(value.trim()))
+            .filter((value) => Number.isFinite(value) && value > 0);
+          if (!movieIds.length) {
+            throw new Error("Ingresa al menos un movieId.");
+          }
+          body.movieIds = movieIds;
+
+          const ratingsText = $("ratings").value.trim();
+          if (ratingsText) {
+            body.ratings = JSON.parse(ratingsText);
+          }
+        }
+
+        const response = await fetch("/recommendations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || "No se pudo generar la recomendación.");
+        }
+
+        state.lastPayload = payload;
+        renderSummary(payload);
+        renderSeedMovies(payload);
+        renderMatrices(payload);
+        renderRecommendations(payload);
+        renderRawJson(payload);
+        setStatus("Consulta resuelta correctamente.");
+      } catch (error) {
+        console.error(error);
+        setStatus(error.message || "Error inesperado", "error");
+      }
+    }
+
+    $("modeUser").addEventListener("click", () => setMode("user"));
+    $("modeSeed").addEventListener("click", () => setMode("seed"));
+    $("runBtn").addEventListener("click", submit);
+    $("clearBtn").addEventListener("click", clearSections);
+
+    setMode("user");
+    clearSections();
+  </script>
+</body>
+</html>

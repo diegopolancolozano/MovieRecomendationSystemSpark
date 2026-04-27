@@ -1,2 +1,27 @@
-data/*
-.env/*
+# Output directories
+output/
+output_demo/
+output_demo_fix/
+output_lab/
+resultados_laboratorio/
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+frontend-nextjs/node_modules
