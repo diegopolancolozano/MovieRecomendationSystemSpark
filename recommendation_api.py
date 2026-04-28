@@ -1,9 +1,11 @@
 """Explainable HTTP API and frontend for the MovieLens recommendation system.
 
 Endpoints:
-  GET  /               -> frontend HTML
-  GET  /health         -> service health and metadata
-  POST /recommendations -> recommendation payload
+  GET  /                          -> frontend HTML
+  GET  /health                    -> service health and metadata
+  GET  /recommendations           -> all users with their recommendations (Lab 10)
+  GET  /recommendations/{user_id} -> single user recommendations (Lab 10)
+  POST /recommendations           -> recommendation payload (legacy)
 
 The POST body accepts either:
   - {"userId": 1, "k": 10, "top_n": 10}
@@ -28,6 +30,7 @@ import csv
 import json
 import math
 import os
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -68,6 +71,7 @@ class RecommendationService:
         self._cluster_recommendations_cache: Dict[int, Dict[int, List[Dict[str, Any]]]] = {}
         self._user_profile_cache: Dict[int, Dict[str, Any]] = {}
         self._cluster_profile_cache: Dict[int, Dict[int, Dict[str, Any]]] = {}
+        self._lab10_cache: Optional[List[Dict[str, Any]]] = None
         print(
             f"[INFO] Loaded {len(self.movies)} movies, {len(self.user_ratings)} users, best_k={self.best_k}"
         )
@@ -451,6 +455,47 @@ class RecommendationService:
         }
 
 
+    def get_lab10_recommendations(self) -> List[Dict[str, Any]]:
+        """Carga y cachea las recomendaciones desde el JSON generado por Spark.
+
+        Formato de salida requerido por Lab 10:
+          [{"user_id": 1, "cluster": 2, "recommendations": [{"movie_id": ..., "movie_title": ..., "score": ...}]}]
+        """
+        if self._lab10_cache is not None:
+            return self._lab10_cache
+
+        path = self.output_dir / f"recommendations_k{self.best_k}.json"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Archivo no encontrado: {path}. Ejecuta spark-kmeans-local.py primero."
+            )
+
+        raw: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        result: List[Dict[str, Any]] = []
+
+        for user_id_str, items in raw.items():
+            sorted_items = sorted(items, key=lambda x: x["rank"])
+            cluster = sorted_items[0]["cluster"] if sorted_items else -1
+            result.append(
+                {
+                    "user_id": int(user_id_str),
+                    "cluster": cluster,
+                    "recommendations": [
+                        {
+                            "movie_id": item["movieId"],
+                            "movie_title": item["title"],
+                            "score": round(float(item["cluster_avg_rating"]), 4),
+                        }
+                        for item in sorted_items
+                    ],
+                }
+            )
+
+        result.sort(key=lambda x: x["user_id"])
+        self._lab10_cache = result
+        return result
+
+
 class RecommendationHandler(BaseHTTPRequestHandler):
     service: RecommendationService
 
@@ -501,6 +546,31 @@ class RecommendationHandler(BaseHTTPRequestHandler):
                     "users_loaded": len(self.service.user_ratings),
                 },
             )
+            return
+
+        # Lab 10 — GET /recommendations (todas las recomendaciones)
+        if route == "/recommendations":
+            try:
+                data = self.service.get_lab10_recommendations()
+                self._send_json(HTTPStatus.OK, data)
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+
+        # Lab 10 — GET /recommendations/{user_id}
+        match = re.fullmatch(r"/recommendations/(\d+)", route)
+        if match:
+            user_id = int(match.group(1))
+            try:
+                all_recs = self.service.get_lab10_recommendations()
+            except FileNotFoundError as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                return
+            user_data = next((u for u in all_recs if u["user_id"] == user_id), None)
+            if user_data is None:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Usuario {user_id} no encontrado"})
+            else:
+                self._send_json(HTTPStatus.OK, user_data)
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -571,7 +641,12 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), RecommendationHandler)
     print(f"[INFO] Recommendation API running on http://{args.host}:{args.port}")
     print(f"[INFO] Best K loaded from output: {service.best_k}")
-    print("[INFO] Endpoints: GET /, GET /health, POST /recommendations")
+    print("[INFO] Endpoints:")
+    print("[INFO]   GET  /                          -> frontend HTML")
+    print("[INFO]   GET  /health                    -> health check")
+    print("[INFO]   GET  /recommendations           -> all users (Lab 10)")
+    print("[INFO]   GET  /recommendations/{user_id} -> single user (Lab 10)")
+    print("[INFO]   POST /recommendations           -> recommendation payload")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
