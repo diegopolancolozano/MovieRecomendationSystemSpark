@@ -572,12 +572,15 @@ class RecommendationHandler(BaseHTTPRequestHandler):
         query_params = parse_qs(parsed.query)
 
         if route in {"/", "/index.html"}:
-            if FRONTEND_FILE.exists():
-                self._send_html(FRONTEND_FILE.read_text(encoding="utf-8"))
-            else:
-                self._send_html(
-                    "<html><body><h1>Recommendation API</h1><p>Frontend file missing.</p></body></html>"
-                )
+            # Frontend removed — return minimal API info
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "service": "Recommendation API",
+                    "message": "Frontend removed; API-only deployment",
+                    "endpoints": ["/health", "/movies", "/recommendations", "/recommendations/{user_id}"],
+                },
+            )
             return
 
         if route == "/health":
@@ -697,7 +700,7 @@ def main() -> None:
     print(f"[INFO] Recommendation API running on http://{args.host}:{args.port}")
     print(f"[INFO] Best K loaded from output: {service.best_k}")
     print("[INFO] Endpoints:")
-    print("[INFO]   GET  /                          -> frontend HTML")
+    print("[INFO]   GET  /                          -> API info")
     print("[INFO]   GET  /health                    -> health check")
     print("[INFO]   GET  /movies?query=...          -> search movies by title")
     print("[INFO]   GET  /recommendations           -> all users (Lab 10)")
