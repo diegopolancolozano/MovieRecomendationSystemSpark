@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type Recommendation = {
   movieId: number;
@@ -41,6 +41,12 @@ type SeedResponse = {
   recommendations: Recommendation[];
 };
 
+type MovieSearchItem = {
+  movieId: number;
+  title: string;
+  genres: string[];
+};
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 function formatGenres(genres: string | string[]) {
@@ -48,14 +54,54 @@ function formatGenres(genres: string | string[]) {
 }
 
 export default function Page() {
-  const [view, setView] = useState<"menu" | "user" | "seed">("menu");
+  const [view, setView] = useState<"menu" | "user-input" | "seed-input" | "user" | "seed">("menu");
   const [userId, setUserId] = useState("12");
   const [selectedMovies, setSelectedMovies] = useState<number[]>([]);
   const [movieSearch, setMovieSearch] = useState("");
+  const [movieResults, setMovieResults] = useState<MovieSearchItem[]>([]);
+  const [movieSearchLoading, setMovieSearchLoading] = useState(false);
+  const [movieSearchError, setMovieSearchError] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [userResult, setUserResult] = useState<UserResponse | null>(null);
   const [seedResult, setSeedResult] = useState<SeedResponse | null>(null);
+
+  useEffect(() => {
+    if (view !== "seed-input") return;
+    const query = movieSearch.trim();
+    if (query.length < 2) {
+      setMovieResults([]);
+      setMovieSearchError("");
+      setMovieSearchLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(async () => {
+      setMovieSearchLoading(true);
+      setMovieSearchError("");
+      try {
+        const response = await fetch(
+          `${API_BASE}/movies?query=${encodeURIComponent(query)}&limit=30`,
+          { signal: controller.signal }
+        );
+        const data = (await response.json()) as { movies?: MovieSearchItem[]; error?: string };
+        if (!response.ok) throw new Error(data.error || "No se pudo buscar películas");
+        setMovieResults(data.movies ?? []);
+      } catch (ex) {
+        if (ex instanceof Error && ex.name === "AbortError") return;
+        setMovieSearchError(ex instanceof Error ? ex.message : "Error inesperado");
+        setMovieResults([]);
+      } finally {
+        setMovieSearchLoading(false);
+      }
+    }, 250);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+    };
+  }, [movieSearch, view]);
 
   async function fetchUserRecommendations() {
     setLoading(true);
@@ -154,22 +200,7 @@ export default function Page() {
 
   // Entrada de películas
   if (view === "seed-input") {
-    const allMovies = [
-      { id: 1, title: "Toy Story" },
-      { id: 260, title: "Star Wars: Episode IV" },
-      { id: 1196, title: "Star Wars: Episode V - The Empire Strikes Back" },
-      { id: 858, title: "Godfather, The" },
-      { id: 50, title: "Usual Suspects, The" },
-      { id: 527, title: "Schindler's List" },
-      { id: 294, title: "Lawnmower Man, The" },
-      { id: 1210, title: "Star Wars: Episode VI - Return of the Jedi" },
-      { id: 2959, title: "Fight Club" },
-      { id: 2858, title: "American Beauty" },
-    ];
-
-    const filtered = allMovies.filter((m) =>
-      m.title.toLowerCase().includes(movieSearch.toLowerCase())
-    );
+    const results = movieResults;
 
     return (
       <main className="container">
@@ -185,14 +216,25 @@ export default function Page() {
             className="input"
           />
 
+          {movieSearchError && <p className="error">{movieSearchError}</p>}
+          {!movieSearchError && movieSearch.trim().length < 2 && (
+            <p className="hint">Escribe al menos 2 letras para buscar.</p>
+          )}
+          {!movieSearchLoading && movieSearch.trim().length >= 2 && results.length === 0 && !movieSearchError && (
+            <p className="hint">No encontramos coincidencias.</p>
+          )}
+          {movieSearchLoading && <p className="hint">Buscando...</p>}
+
           <div className="movie-list">
-            {filtered.map((movie) => (
+            {results.map((movie) => (
               <button
-                key={movie.id}
-                className={`movie-tag ${selectedMovies.includes(movie.id) ? "active" : ""}`}
+                key={movie.movieId}
+                className={`movie-tag ${selectedMovies.includes(movie.movieId) ? "active" : ""}`}
                 onClick={() =>
                   setSelectedMovies((prev) =>
-                    prev.includes(movie.id) ? prev.filter((id) => id !== movie.id) : [...prev, movie.id]
+                    prev.includes(movie.movieId)
+                      ? prev.filter((id) => id !== movie.movieId)
+                      : [...prev, movie.movieId]
                   )
                 }
               >

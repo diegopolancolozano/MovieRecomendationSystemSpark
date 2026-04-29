@@ -1,9 +1,10 @@
 """Explainable HTTP API and frontend for the MovieLens recommendation system.
 
 Endpoints:
-  GET  /                          -> frontend HTML
-  GET  /health                    -> service health and metadata
-  GET  /recommendations           -> all users with their recommendations (Lab 10)
+    GET  /                          -> frontend HTML
+    GET  /health                    -> service health and metadata
+    GET  /movies?query=...          -> search movies by title
+    GET  /recommendations           -> all users with their recommendations (Lab 10)
   GET  /recommendations/{user_id} -> single user recommendations (Lab 10)
   POST /recommendations           -> recommendation payload (legacy)
 
@@ -31,12 +32,14 @@ import json
 import math
 import os
 import re
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, DefaultDict, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "output"
@@ -109,6 +112,44 @@ class RecommendationService:
                     seen.add(genre)
                     genre_names.append(genre)
         return sorted(genre_names)
+
+    def search_movies(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        cleaned = query.strip()
+        if not cleaned:
+            return []
+
+        normalized = cleaned.casefold()
+        limit = max(1, min(limit, 50))
+        matches: List[tuple[int, int, int, str, int, MovieRecord]] = []
+
+        for movie in self.movies.values():
+            title_norm = movie.title.casefold()
+            index = title_norm.find(normalized)
+            if index == -1:
+                continue
+            starts_with = 1 if index == 0 else 0
+            matches.append((starts_with, index, len(movie.title), movie.title, movie.movie_id, movie))
+
+        matches.sort(key=lambda item: (-item[0], item[1], item[2], item[3], item[4]))
+
+        results: List[Dict[str, Any]] = []
+        seen_ids: set[int] = set()
+
+        if normalized.isdigit():
+            movie_id = int(normalized)
+            movie = self.movies.get(movie_id)
+            if movie is not None:
+                results.append({"movieId": movie.movie_id, "title": movie.title, "genres": movie.genres})
+                seen_ids.add(movie.movie_id)
+
+        for _, _, _, _, movie_id, movie in matches:
+            if movie_id in seen_ids:
+                continue
+            results.append({"movieId": movie.movie_id, "title": movie.title, "genres": movie.genres})
+            if len(results) >= limit:
+                break
+
+        return results
 
     def _load_ratings(self) -> tuple[Dict[int, List[RatingRecord]], Dict[int, Dict[str, float]], Dict[str, float]]:
         ratings_path = self.data_dir / "ratings.dat"
@@ -526,7 +567,13 @@ class RecommendationHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        route = self.path.rstrip("/") or "/"
+        parsed = urlparse(self.path)
+        route = parsed.path.rstrip("/") or "/"
+        query_params = parse_qs(parsed.query)
+        import json as _json
+        with open("C:\\Users\\DELL\\Desktop\\api_debug.log", "a") as f:
+            _json.dump({"path": self.path, "route": route}, f)
+            f.write("\n")
         if route in {"/", "/index.html"}:
             if FRONTEND_FILE.exists():
                 self._send_html(FRONTEND_FILE.read_text(encoding="utf-8"))
@@ -546,6 +593,17 @@ class RecommendationHandler(BaseHTTPRequestHandler):
                     "users_loaded": len(self.service.user_ratings),
                 },
             )
+            return
+
+        if route == "/movies":
+            query = (query_params.get("query") or [""])[0]
+            limit_raw = (query_params.get("limit") or ["20"])[0]
+            try:
+                limit = int(limit_raw)
+            except ValueError:
+                limit = 20
+            data = self.service.search_movies(query, limit=limit)
+            self._send_json(HTTPStatus.OK, {"movies": data})
             return
 
         # Lab 10 — GET /recommendations (todas las recomendaciones)
@@ -621,7 +679,8 @@ class RecommendationHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, response)
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[API] {self.address_string()} - {format % args}")
+        msg = f"[API] {self.address_string()} - {format % args}"
+        print(msg, flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -644,6 +703,7 @@ def main() -> None:
     print("[INFO] Endpoints:")
     print("[INFO]   GET  /                          -> frontend HTML")
     print("[INFO]   GET  /health                    -> health check")
+    print("[INFO]   GET  /movies?query=...          -> search movies by title")
     print("[INFO]   GET  /recommendations           -> all users (Lab 10)")
     print("[INFO]   GET  /recommendations/{user_id} -> single user (Lab 10)")
     print("[INFO]   POST /recommendations           -> recommendation payload")
