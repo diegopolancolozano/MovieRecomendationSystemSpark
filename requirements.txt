@@ -1,0 +1,6 @@
+# Dependencias opcionales
+# El backend `recommendation_api.py` no requiere paquetes externos de pip para
+# servir las recomendaciones (usa la librería estándar).  
+# Si quieres ejecutar el pipeline Spark u otras características, instala PySpark.
+
+pyspark>=3.3.0
