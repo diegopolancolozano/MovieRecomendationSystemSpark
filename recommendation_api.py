@@ -570,10 +570,7 @@ class RecommendationHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         route = parsed.path.rstrip("/") or "/"
         query_params = parse_qs(parsed.query)
-        import json as _json
-        with open("C:\\Users\\DELL\\Desktop\\api_debug.log", "a") as f:
-            _json.dump({"path": self.path, "route": route}, f)
-            f.write("\n")
+
         if route in {"/", "/index.html"}:
             if FRONTEND_FILE.exists():
                 self._send_html(FRONTEND_FILE.read_text(encoding="utf-8"))
@@ -611,7 +608,7 @@ class RecommendationHandler(BaseHTTPRequestHandler):
             try:
                 data = self.service.get_lab10_recommendations()
                 self._send_json(HTTPStatus.OK, data)
-            except FileNotFoundError as exc:
+            except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
 
@@ -621,14 +618,13 @@ class RecommendationHandler(BaseHTTPRequestHandler):
             user_id = int(match.group(1))
             try:
                 all_recs = self.service.get_lab10_recommendations()
-            except FileNotFoundError as exc:
+                user_data = next((u for u in all_recs if u["user_id"] == user_id), None)
+                if user_data is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Usuario {user_id} no encontrado"})
+                else:
+                    self._send_json(HTTPStatus.OK, user_data)
+            except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
-                return
-            user_data = next((u for u in all_recs if u["user_id"] == user_id), None)
-            if user_data is None:
-                self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Usuario {user_id} no encontrado"})
-            else:
-                self._send_json(HTTPStatus.OK, user_data)
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})

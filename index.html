@@ -241,6 +241,7 @@
     }
 
     .button:hover { filter: brightness(1.04); }
+    .button:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
 
     .sections {
       display: grid;
@@ -303,6 +304,20 @@
       line-height: 1.55;
     }
 
+    .score-bar {
+      margin-top: 10px;
+      height: 4px;
+      border-radius: 99px;
+      background: rgba(255,255,255,0.08);
+      overflow: hidden;
+    }
+
+    .score-bar-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    }
+
     .pill-row {
       display: flex;
       gap: 8px;
@@ -331,7 +346,7 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 680px;
+      min-width: 500px;
     }
 
     th, td {
@@ -358,9 +373,9 @@
     }
 
     .muted { color: var(--muted); }
-    .good { color: var(--good); }
-    .warn { color: var(--warn); }
-    .danger { color: var(--danger); }
+    .good  { color: var(--good); }
+    .warn  { color: var(--warn); }
+    .danger{ color: var(--danger); }
 
     .raw-json {
       margin-top: 14px;
@@ -396,6 +411,18 @@
       background: rgba(251, 113, 133, 0.08);
     }
 
+    .endpoint-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-family: monospace;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(110, 231, 255, 0.1);
+      border: 1px solid rgba(110, 231, 255, 0.25);
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
     @media (max-width: 1100px) {
       .hero, .grid, .summary { grid-template-columns: 1fr; }
       .panel { position: static; }
@@ -406,26 +433,25 @@
   <div class="shell">
     <section class="hero">
       <div class="hero-card">
-        <div class="eyebrow">MovieLens 1M · Explainable Recommendations</div>
-        <h1>Recomendador con cluster, matriz de gustos y trazabilidad completa.</h1>
+        <div class="eyebrow">MovieLens 1M · Lab Semana 10</div>
+        <h1>API REST de Recomendaciones de Películas</h1>
         <p class="lead">
-          Consulta por <strong>userId</strong> o por películas marcadas. El panel muestra el cluster asignado,
-          la matriz de gustos del usuario, la matriz promedio del cluster y el detalle de rating que usó el sistema
-          para ordenar las recomendaciones.
+          Consulta recomendaciones por <strong>userId</strong> o explora todos los usuarios del sistema.
+          Las recomendaciones se generan con K-Means clustering sobre preferencias de género.
         </p>
       </div>
       <div class="stats">
         <div class="stat">
-          <div class="label">Modo</div>
-          <div class="value">Usuario / Películas</div>
+          <div class="label">Endpoint 1</div>
+          <div class="value" style="font-size:14px">GET /recommendations</div>
         </div>
         <div class="stat">
-          <div class="label">Backend</div>
-          <div class="value">Python HTTP</div>
+          <div class="label">Endpoint 2</div>
+          <div class="value" style="font-size:14px">GET /recommendations/{id}</div>
         </div>
         <div class="stat">
-          <div class="label">Salida</div>
-          <div class="value">JSON + Front</div>
+          <div class="label">Dataset</div>
+          <div class="value">MovieLens 1M</div>
         </div>
       </div>
     </section>
@@ -433,36 +459,26 @@
     <section class="grid">
       <aside class="panel">
         <h2>Consulta</h2>
-        <p class="hint">Selecciona un modo y envía la consulta al API local. Si usas películas marcadas, puedes pasar ratings opcionales en JSON.</p>
+        <p class="hint">Busca un usuario por ID o carga todos los usuarios del sistema.</p>
 
         <div class="mode-toggle">
           <button id="modeUser" class="active" type="button">Por userId</button>
-          <button id="modeSeed" type="button">Por películas</button>
+          <button id="modeAll" type="button">Todos los usuarios</button>
         </div>
 
-        <label for="userId">User ID</label>
-        <input id="userId" type="number" min="1" placeholder="Ej. 12" value="12" />
+        <div id="userFields">
+          <div class="endpoint-badge">GET /recommendations/{user_id}</div>
+          <label for="userId">User ID</label>
+          <input id="userId" type="number" min="1" placeholder="Ej. 1" value="1" />
+        </div>
 
-        <label for="movieIds">Movie IDs marcadas</label>
-        <textarea id="movieIds" placeholder="Ej. 1196, 260, 858">1196, 260, 858</textarea>
-
-        <label for="ratings">Ratings opcionales para películas marcadas (JSON)</label>
-        <textarea id="ratings" placeholder='{"1196": 5, "260": 4}'>{"1196": 5, "260": 4, "858": 4}</textarea>
-
-        <label for="kValue">K</label>
-        <select id="kValue">
-          <option value="">Usar best_k</option>
-          <option value="3">3</option>
-          <option value="5">5</option>
-          <option value="8">8</option>
-          <option value="10">10</option>
-        </select>
-
-        <label for="topN">Top N</label>
-        <input id="topN" type="number" min="1" max="50" value="10" />
+        <div id="allFields" class="hidden">
+          <div class="endpoint-badge">GET /recommendations</div>
+          <p class="hint">Carga todos los usuarios con sus recomendaciones precalculadas.</p>
+        </div>
 
         <div class="actions">
-          <button id="runBtn" class="button" type="button">Recomendar</button>
+          <button id="runBtn" class="button" type="button">Consultar</button>
           <button id="clearBtn" class="button secondary" type="button">Limpiar</button>
         </div>
 
@@ -470,44 +486,47 @@
       </aside>
 
       <main class="sections">
+        <!-- Resumen -->
         <section class="section">
           <h2>Resumen</h2>
           <div id="summary" class="summary">
             <div class="summary-card"><div class="label">Estado</div><div class="value">Sin consulta</div></div>
+            <div class="summary-card"><div class="label">User ID</div><div class="value">-</div></div>
             <div class="summary-card"><div class="label">Cluster</div><div class="value">-</div></div>
-            <div class="summary-card"><div class="label">Seed movies</div><div class="value">-</div></div>
-            <div class="summary-card"><div class="label">K</div><div class="value">-</div></div>
+            <div class="summary-card"><div class="label">Recomendaciones</div><div class="value">-</div></div>
           </div>
         </section>
 
-        <section class="section">
-          <h2>Películas semilla</h2>
-          <div id="seedMovies" class="card-grid"></div>
-        </section>
-
-        <section class="section">
-          <h2>Matriz de gustos del usuario</h2>
-          <div id="userMatrixWrap" class="table-wrap hidden">
-            <table id="userMatrix"></table>
-          </div>
-        </section>
-
-        <section class="section">
-          <h2>Matriz de gustos del cluster</h2>
-          <div id="clusterMatrixWrap" class="table-wrap hidden">
-            <table id="clusterMatrix"></table>
-          </div>
-        </section>
-
-        <section class="section">
+        <!-- Recomendaciones (modo userId) -->
+        <section id="recsSection" class="section hidden">
           <h2>Recomendaciones</h2>
           <div id="recommendations" class="card-grid"></div>
         </section>
 
+        <!-- Tabla de todos los usuarios -->
+        <section id="allSection" class="section hidden">
+          <h2>Todos los usuarios</h2>
+          <div class="table-wrap">
+            <table id="allTable">
+              <thead>
+                <tr>
+                  <th>User ID</th>
+                  <th>Cluster</th>
+                  <th># Recomendaciones</th>
+                  <th>Top película</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody id="allTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- JSON crudo -->
         <section class="section">
-          <h2>Payload completo</h2>
+          <h2>Respuesta JSON</h2>
           <div class="raw-json">
-            <pre id="rawJson">Aquí aparecerá la respuesta completa del API.</pre>
+            <pre id="rawJson">Aquí aparecerá la respuesta del API.</pre>
           </div>
         </section>
       </main>
@@ -515,226 +534,156 @@
   </div>
 
   <script>
-    const state = {
-      mode: "user",
-      lastPayload: null,
-    };
-
+    const state = { mode: "user" };
     const $ = (id) => document.getElementById(id);
 
-    function escapeHtml(value) {
-      return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
+    function esc(v) {
+      return String(v ?? "-")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
     }
 
-    function setStatus(message, kind = "") {
+    function setStatus(msg, kind = "") {
       const el = $("status");
-      el.textContent = message;
+      el.textContent = msg;
       el.className = kind ? `status ${kind}` : "status";
     }
 
     function setMode(mode) {
       state.mode = mode;
       $("modeUser").classList.toggle("active", mode === "user");
-      $("modeSeed").classList.toggle("active", mode === "seed");
-      $("userId").disabled = mode !== "user";
-      $("movieIds").disabled = mode !== "seed";
-      $("ratings").disabled = mode !== "seed";
+      $("modeAll").classList.toggle("active", mode === "all");
+      $("userFields").classList.toggle("hidden", mode !== "user");
+      $("allFields").classList.toggle("hidden", mode !== "all");
     }
 
-    function clearSections() {
+    function clearAll() {
       $("summary").innerHTML = `
         <div class="summary-card"><div class="label">Estado</div><div class="value">Sin consulta</div></div>
+        <div class="summary-card"><div class="label">User ID</div><div class="value">-</div></div>
         <div class="summary-card"><div class="label">Cluster</div><div class="value">-</div></div>
-        <div class="summary-card"><div class="label">Seed movies</div><div class="value">-</div></div>
-        <div class="summary-card"><div class="label">K</div><div class="value">-</div></div>
+        <div class="summary-card"><div class="label">Recomendaciones</div><div class="value">-</div></div>
       `;
-      $("seedMovies").innerHTML = "";
       $("recommendations").innerHTML = "";
-      $("userMatrixWrap").classList.add("hidden");
-      $("clusterMatrixWrap").classList.add("hidden");
-      $("rawJson").textContent = "Aquí aparecerá la respuesta completa del API.";
-      state.lastPayload = null;
+      $("allTableBody").innerHTML = "";
+      $("recsSection").classList.add("hidden");
+      $("allSection").classList.add("hidden");
+      $("rawJson").textContent = "Aquí aparecerá la respuesta del API.";
       setStatus("Listo para consultar el API.");
     }
 
-    function renderSummary(payload) {
-      const clusterText = payload.cluster ? `#${payload.cluster.id} · ${payload.cluster.user_count} users` : "-";
-      const seedCount = payload.profile?.seed_movies?.length ?? payload.seed_movies?.length ?? 0;
-      const kValue = payload.k ?? "-";
-      const mode = payload.mode === "user" ? "Usuario" : "Películas";
+    function renderUserResult(data) {
       $("summary").innerHTML = `
-        <div class="summary-card"><div class="label">Estado</div><div class="value good">${mode}</div></div>
-        <div class="summary-card"><div class="label">Cluster</div><div class="value">${escapeHtml(clusterText)}</div></div>
-        <div class="summary-card"><div class="label">Seed movies</div><div class="value">${seedCount}</div></div>
-        <div class="summary-card"><div class="label">K</div><div class="value">${escapeHtml(kValue)}</div></div>
+        <div class="summary-card"><div class="label">Estado</div><div class="value good">200 OK</div></div>
+        <div class="summary-card"><div class="label">User ID</div><div class="value">${esc(data.user_id)}</div></div>
+        <div class="summary-card"><div class="label">Cluster</div><div class="value">${esc(data.cluster)}</div></div>
+        <div class="summary-card"><div class="label">Recomendaciones</div><div class="value">${data.recommendations.length}</div></div>
       `;
-    }
 
-    function cardGenres(genres) {
-      return (genres || []).map((genre) => `<span class="pill">${escapeHtml(genre)}</span>`).join("");
-    }
-
-    function renderSeedMovies(payload) {
-      const items = payload.profile?.seed_movies || payload.seed_movies || [];
-      const container = $("seedMovies");
-      if (!items.length) {
-        container.innerHTML = '<div class="card"><div class="card-meta">No hay películas semilla para mostrar.</div></div>';
-        return;
-      }
-
-      container.innerHTML = items.map((item) => `
-        <article class="card">
-          <div class="card-title">${escapeHtml(item.title)}</div>
-          <div class="card-meta">
-            <div>Movie ID: ${escapeHtml(item.movieId)}</div>
-            <div>Rating: ${escapeHtml(item.rating ?? item.weight ?? "-")}</div>
-            <div>Weight: ${escapeHtml(item.weight ?? "-")}</div>
-          </div>
-          <div class="pill-row">${cardGenres(item.genres)}</div>
-        </article>
-      `).join("");
-    }
-
-    function renderMatrix(tableId, rows) {
-      const table = $(tableId);
-      if (!rows || !rows.length) {
-        table.innerHTML = "";
-        return;
-      }
-
-      const body = rows.map((row) => `
-        <tr>
-          <td>${escapeHtml(row.genre)}</td>
-          <td>${escapeHtml(row.weight)}</td>
-          <td>${escapeHtml(row.share)}</td>
-        </tr>
-      `).join("");
-
-      table.innerHTML = `
-        <thead>
-          <tr>
-            <th>Género</th>
-            <th>Peso</th>
-            <th>Share</th>
-          </tr>
-        </thead>
-        <tbody>${body}</tbody>
-      `;
-    }
-
-    function renderMatrices(payload) {
-      const userMatrix = payload.profile?.user_taste_matrix || payload.taste_matrix || [];
-      const clusterMatrix = payload.profile?.cluster_taste_matrix || [];
-
-      $("userMatrixWrap").classList.toggle("hidden", !userMatrix.length);
-      $("clusterMatrixWrap").classList.toggle("hidden", !clusterMatrix.length);
-      renderMatrix("userMatrix", userMatrix);
-      renderMatrix("clusterMatrix", clusterMatrix);
-    }
-
-    function renderRecommendations(payload) {
-      const items = payload.recommendations || [];
       const container = $("recommendations");
-      if (!items.length) {
-        container.innerHTML = '<div class="card"><div class="card-meta">No hay recomendaciones para mostrar.</div></div>';
-        return;
-      }
-
-      container.innerHTML = items.map((item) => {
-        const why = item.why || {};
-        const rating = item.movie_rating || {};
-        const tags = [
-          ...new Set([...(why.matched_user_genres || []), ...(why.matched_cluster_genres || [])])
-        ];
+      container.innerHTML = data.recommendations.map((item, i) => {
+        const pct = Math.min(100, ((item.score / 5) * 100)).toFixed(1);
         return `
           <article class="card">
-            <div class="card-title">#${escapeHtml(item.rank ?? item.movieId)} ${escapeHtml(item.title)}</div>
+            <div class="card-meta muted" style="font-size:11px;margin-bottom:4px">#${i + 1}</div>
+            <div class="card-title">${esc(item.movie_title)}</div>
             <div class="card-meta">
-              <div>Movie ID: ${escapeHtml(item.movieId)}</div>
-              <div>Cluster: ${escapeHtml(item.cluster ?? payload.cluster?.id ?? "-")}</div>
-              <div>Ranking score: ${escapeHtml(item.ranking_score ?? item.score ?? "-")}</div>
-              <div>Affinity score: ${escapeHtml(item.affinity_score ?? item.affinity_norm ?? "-")}</div>
-              <div>Avg rating: ${escapeHtml(item.cluster_avg_rating ?? item.avg_rating ?? rating.avg_rating ?? "-")}</div>
-              <div>Ratings count: ${escapeHtml(item.cluster_num_ratings ?? item.ratings_count ?? rating.ratings_count ?? "-")}</div>
+              <div>Movie ID: <strong>${esc(item.movie_id)}</strong></div>
+              <div>Score: <strong class="good">${esc(item.score)}</strong></div>
             </div>
-            <div class="pill-row">${cardGenres(item.genres ? item.genres.split("|") : [])}</div>
-            <div class="pill-row">${cardGenres(tags)}</div>
+            <div class="score-bar">
+              <div class="score-bar-fill" style="width:${pct}%"></div>
+            </div>
           </article>
         `;
       }).join("");
+
+      $("recsSection").classList.remove("hidden");
+      $("allSection").classList.add("hidden");
     }
 
-    function renderRawJson(payload) {
-      $("rawJson").textContent = JSON.stringify(payload, null, 2);
+    function renderAllResult(data) {
+      $("summary").innerHTML = `
+        <div class="summary-card"><div class="label">Estado</div><div class="value good">200 OK</div></div>
+        <div class="summary-card"><div class="label">Total usuarios</div><div class="value">${data.length}</div></div>
+        <div class="summary-card"><div class="label">Endpoint</div><div class="value" style="font-size:13px">GET /recommendations</div></div>
+        <div class="summary-card"><div class="label">Clusters</div><div class="value">${new Set(data.map(u => u.cluster)).size}</div></div>
+      `;
+
+      const tbody = $("allTableBody");
+      tbody.innerHTML = data.map((user) => {
+        const top = user.recommendations[0];
+        return `
+          <tr>
+            <td><strong>${esc(user.user_id)}</strong></td>
+            <td>${esc(user.cluster)}</td>
+            <td>${user.recommendations.length}</td>
+            <td>${top ? esc(top.movie_title) : "-"}</td>
+            <td class="good">${top ? esc(top.score) : "-"}</td>
+          </tr>
+        `;
+      }).join("");
+
+      $("allSection").classList.remove("hidden");
+      $("recsSection").classList.add("hidden");
     }
 
     async function submit() {
+      const btn = $("runBtn");
+      btn.disabled = true;
+      clearAll();
+
       try {
-        setStatus("Consultando recomendaciones...");
-        const topN = Number($("topN").value || 10);
-        const body = { top_n: topN };
-        const kValue = $("kValue").value;
-        if (kValue) {
-          body.k = Number(kValue);
+        let url, label;
+        if (state.mode === "user") {
+          const userId = Number($("userId").value);
+          if (!userId || userId < 1) throw new Error("Ingresa un userId válido.");
+          url = `/recommendations/${userId}`;
+          label = `GET /recommendations/${userId}`;
+        } else {
+          url = "/recommendations";
+          label = "GET /recommendations";
+        }
+
+        setStatus(`Consultando ${label}...`);
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!response.ok) {
+          const code = response.status;
+          const kind = code === 404 ? "error" : "error";
+          setStatus(`${code} ${code === 404 ? "Not Found" : "Error"}: ${data.error ?? "Error desconocido"}`, kind);
+          $("summary").innerHTML = `
+            <div class="summary-card"><div class="label">Estado</div><div class="value danger">${code}</div></div>
+            <div class="summary-card"><div class="label">Error</div><div class="value" style="font-size:13px">${esc(data.error)}</div></div>
+            <div class="summary-card"><div class="label">-</div><div class="value">-</div></div>
+            <div class="summary-card"><div class="label">-</div><div class="value">-</div></div>
+          `;
+          $("rawJson").textContent = JSON.stringify(data, null, 2);
+          return;
         }
 
         if (state.mode === "user") {
-          body.userId = Number($("userId").value);
-          if (!body.userId) {
-            throw new Error("Ingresa un userId válido.");
-          }
+          renderUserResult(data);
         } else {
-          const movieIds = $("movieIds").value
-            .split(/[\s,]+/)
-            .map((value) => Number(value.trim()))
-            .filter((value) => Number.isFinite(value) && value > 0);
-          if (!movieIds.length) {
-            throw new Error("Ingresa al menos un movieId.");
-          }
-          body.movieIds = movieIds;
-
-          const ratingsText = $("ratings").value.trim();
-          if (ratingsText) {
-            body.ratings = JSON.parse(ratingsText);
-          }
+          renderAllResult(data);
         }
 
-        const response = await fetch("/recommendations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.error || "No se pudo generar la recomendación.");
-        }
-
-        state.lastPayload = payload;
-        renderSummary(payload);
-        renderSeedMovies(payload);
-        renderMatrices(payload);
-        renderRecommendations(payload);
-        renderRawJson(payload);
-        setStatus("Consulta resuelta correctamente.");
-      } catch (error) {
-        console.error(error);
-        setStatus(error.message || "Error inesperado", "error");
+        $("rawJson").textContent = JSON.stringify(data, null, 2);
+        setStatus(`Consulta exitosa — ${label}`);
+      } catch (err) {
+        setStatus(err.message || "Error inesperado", "error");
+      } finally {
+        btn.disabled = false;
       }
     }
 
     $("modeUser").addEventListener("click", () => setMode("user"));
-    $("modeSeed").addEventListener("click", () => setMode("seed"));
+    $("modeAll").addEventListener("click", () => setMode("all"));
     $("runBtn").addEventListener("click", submit);
-    $("clearBtn").addEventListener("click", clearSections);
+    $("clearBtn").addEventListener("click", clearAll);
 
     setMode("user");
-    clearSections();
   </script>
 </body>
 </html>
