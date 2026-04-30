@@ -40,6 +40,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, DefaultDict, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
+import io
+
+try:
+    from google.cloud import storage
+except Exception:
+    storage = None
+
+from google.cloud import storage
+import json
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "output"
@@ -61,15 +70,41 @@ class RatingRecord:
     movie_id: int
     rating: float
 
+def load_json_from_gcs(bucket_name, path):
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(path)
+    return json.loads(blob.download_as_text())
 
 class RecommendationService:
     def __init__(self, data_dir: Path, output_dir: Path) -> None:
         self.data_dir = data_dir
         self.output_dir = output_dir
-        self.movies = self._load_movies()
-        self.user_ratings, self.movie_rating_stats, self.global_rating_stats = self._load_ratings()
-        self.genre_names = self._load_genre_names()
-        self.best_k = self._load_best_k()
+        # GCS integration: if GCS_BUCKET env var is set, use it as source
+        self.gcs_bucket_name = os.getenv("GCS_BUCKET")
+        self.gcs_client = None
+        if self.gcs_bucket_name and storage is not None:
+            try:
+                self.gcs_client = storage.Client()
+            except Exception:
+                self.gcs_client = None
+        # Initialization may fail if dataset files are not present in the container
+        # (common when the repo excludes large data). Instead of crashing the
+        # process, capture the error and continue running in a degraded mode so
+        # the service can report its status and accept configuration updates.
+        self._init_error: Optional[str] = None
+        try:
+            self.movies = self._load_movies()
+            self.user_ratings, self.movie_rating_stats, self.global_rating_stats = self._load_ratings()
+            self.genre_names = self._load_genre_names()
+            self.best_k = self._load_best_k()
+        except FileNotFoundError as exc:
+            self._init_error = str(exc)
+            # fall back to empty structures to keep the service alive
+            self.movies = {}
+            self.user_ratings, self.movie_rating_stats, self.global_rating_stats = {}, {}, {"avg_rating": 0.0, "count": 0.0}
+            self.genre_names = []
+            self.best_k = 10
         self._cluster_assignments_cache: Dict[int, Dict[int, int]] = {}
         self._cluster_recommendations_cache: Dict[int, Dict[int, List[Dict[str, Any]]]] = {}
         self._user_profile_cache: Dict[int, Dict[str, Any]] = {}
@@ -79,28 +114,51 @@ class RecommendationService:
             f"[INFO] Loaded {len(self.movies)} movies, {len(self.user_ratings)} users, best_k={self.best_k}"
         )
 
+        if self._init_error:
+            print(f"[WARN] Initialization warning: {self._init_error}")
+
+    def is_ready(self) -> bool:
+        """Return True when required dataset files were loaded successfully."""
+        return self._init_error is None
+
     def _load_movies(self) -> Dict[int, MovieRecord]:
-        movies_path = self.data_dir / "movies.dat"
-        if not movies_path.exists():
-            raise FileNotFoundError(f"Missing dataset file: {movies_path}")
+        # Support reading from GCS or local filesystem
+        rel_path = "ml-1m/movies.dat"
+        content = None
+        if self.gcs_client:
+            bucket = self.gcs_client.bucket(self.gcs_bucket_name)
+            blob = bucket.blob(rel_path)
+            if not blob.exists():
+                raise FileNotFoundError(f"Missing dataset file in GCS: {self.gcs_bucket_name}/{rel_path}")
+            content = blob.download_as_text(encoding="latin-1")
+            handle_iter = content.splitlines()
+        else:
+            movies_path = self.data_dir / "movies.dat"
+            if not movies_path.exists():
+                raise FileNotFoundError(f"Missing dataset file: {movies_path}")
+            handle_iter = movies_path.open("r", encoding="latin-1")
 
         movies: Dict[int, MovieRecord] = {}
-        with movies_path.open("r", encoding="latin-1") as handle:
-            for raw_line in handle:
-                raw_line = raw_line.strip()
-                if not raw_line:
-                    continue
-                parts = raw_line.split("::")
-                if len(parts) < 3:
-                    continue
-                movie_id = int(parts[0])
-                title = parts[1]
-                genres = [
-                    genre
-                    for genre in parts[2].split("|")
-                    if genre and genre != "(no genres listed)"
-                ]
-                movies[movie_id] = MovieRecord(movie_id=movie_id, title=title, genres=genres)
+        for raw_line in handle_iter:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            parts = raw_line.split("::")
+            if len(parts) < 3:
+                continue
+            movie_id = int(parts[0])
+            title = parts[1]
+            genres = [
+                genre
+                for genre in parts[2].split("|")
+                if genre and genre != "(no genres listed)"
+            ]
+            movies[movie_id] = MovieRecord(movie_id=movie_id, title=title, genres=genres)
+
+        # close local file handle if used
+        if not self.gcs_client and hasattr(handle_iter, "close"):
+            handle_iter.close()
+
         return movies
 
     def _load_genre_names(self) -> List[str]:
@@ -152,9 +210,18 @@ class RecommendationService:
         return results
 
     def _load_ratings(self) -> tuple[Dict[int, List[RatingRecord]], Dict[int, Dict[str, float]], Dict[str, float]]:
-        ratings_path = self.data_dir / "ratings.dat"
-        if not ratings_path.exists():
-            raise FileNotFoundError(f"Missing dataset file: {ratings_path}")
+        rel_path = "ml-1m/ratings.dat"
+        if self.gcs_client:
+            bucket = self.gcs_client.bucket(self.gcs_bucket_name)
+            blob = bucket.blob(rel_path)
+            if not blob.exists():
+                raise FileNotFoundError(f"Missing dataset file in GCS: {self.gcs_bucket_name}/{rel_path}")
+            iterator = blob.download_as_text(encoding="latin-1").splitlines()
+        else:
+            ratings_path = self.data_dir / "ratings.dat"
+            if not ratings_path.exists():
+                raise FileNotFoundError(f"Missing dataset file: {ratings_path}")
+            iterator = ratings_path.open("r", encoding="latin-1")
 
         user_ratings: DefaultDict[int, List[RatingRecord]] = defaultdict(list)
         movie_totals: DefaultDict[int, float] = defaultdict(float)
@@ -162,23 +229,25 @@ class RecommendationService:
         global_total = 0.0
         global_count = 0
 
-        with ratings_path.open("r", encoding="latin-1") as handle:
-            for raw_line in handle:
-                raw_line = raw_line.strip()
-                if not raw_line:
-                    continue
-                parts = raw_line.split("::")
-                if len(parts) < 4:
-                    continue
-                user_id = int(parts[0])
-                movie_id = int(parts[1])
-                rating = float(parts[2])
-                record = RatingRecord(user_id=user_id, movie_id=movie_id, rating=rating)
-                user_ratings[user_id].append(record)
-                movie_totals[movie_id] += rating
-                movie_counts[movie_id] += 1
-                global_total += rating
-                global_count += 1
+        for raw_line in iterator:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            parts = raw_line.split("::")
+            if len(parts) < 4:
+                continue
+            user_id = int(parts[0])
+            movie_id = int(parts[1])
+            rating = float(parts[2])
+            record = RatingRecord(user_id=user_id, movie_id=movie_id, rating=rating)
+            user_ratings[user_id].append(record)
+            movie_totals[movie_id] += rating
+            movie_counts[movie_id] += 1
+            global_total += rating
+            global_count += 1
+
+        if not self.gcs_client and hasattr(iterator, "close"):
+            iterator.close()
 
         movie_stats: Dict[int, Dict[str, float]] = {}
         for movie_id, count in movie_counts.items():
@@ -212,17 +281,29 @@ class RecommendationService:
         if k_value in self._cluster_assignments_cache:
             return self._cluster_assignments_cache[k_value]
 
-        path = self.output_dir / f"clusters_k{k_value}" / "data.csv"
-        if not path.exists():
-            raise FileNotFoundError(f"Missing cluster assignments file: {path}")
-
+        rel_path = f"output/clusters_k{k_value}/data.csv"
         assignments: Dict[int, int] = {}
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
+        if self.gcs_client:
+            bucket = self.gcs_client.bucket(self.gcs_bucket_name)
+            blob = bucket.blob(rel_path)
+            if not blob.exists():
+                raise FileNotFoundError(f"Missing cluster assignments in GCS: {self.gcs_bucket_name}/{rel_path}")
+            content = blob.download_as_text(encoding="utf-8")
+            reader = csv.DictReader(io.StringIO(content))
             for row in reader:
                 user_id = int(row["userId"])
                 cluster_id = int(row["cluster"])
                 assignments[user_id] = cluster_id
+        else:
+            path = self.output_dir / f"clusters_k{k_value}" / "data.csv"
+            if not path.exists():
+                raise FileNotFoundError(f"Missing cluster assignments file: {path}")
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    user_id = int(row["userId"])
+                    cluster_id = int(row["cluster"])
+                    assignments[user_id] = cluster_id
 
         self._cluster_assignments_cache[k_value] = assignments
         return assignments
@@ -230,14 +311,15 @@ class RecommendationService:
     def _load_cluster_recommendations(self, k_value: int) -> Dict[int, List[Dict[str, Any]]]:
         if k_value in self._cluster_recommendations_cache:
             return self._cluster_recommendations_cache[k_value]
-
-        path = self.output_dir / f"recommendations_top10_k{k_value}" / "data.csv"
-        if not path.exists():
-            raise FileNotFoundError(f"Missing recommendation file: {path}")
-
+        rel_path = f"output/recommendations_top10_k{k_value}/data.csv"
         grouped: DefaultDict[int, List[Dict[str, Any]]] = defaultdict(list)
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
+        if self.gcs_client:
+            bucket = self.gcs_client.bucket(self.gcs_bucket_name)
+            blob = bucket.blob(rel_path)
+            if not blob.exists():
+                raise FileNotFoundError(f"Missing recommendation file in GCS: {self.gcs_bucket_name}/{rel_path}")
+            content = blob.download_as_text(encoding="utf-8")
+            reader = csv.DictReader(io.StringIO(content))
             for row in reader:
                 user_id = int(row["userId"])
                 grouped[user_id].append(
@@ -254,6 +336,28 @@ class RecommendationService:
                         "rank": int(row["rank"]),
                     }
                 )
+        else:
+            path = self.output_dir / f"recommendations_top10_k{k_value}" / "data.csv"
+            if not path.exists():
+                raise FileNotFoundError(f"Missing recommendation file: {path}")
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    user_id = int(row["userId"])
+                    grouped[user_id].append(
+                        {
+                            "userId": user_id,
+                            "cluster": int(row["cluster"]),
+                            "movieId": int(row["movieId"]),
+                            "title": row["title"],
+                            "genres": row["genres"],
+                            "ranking_score": float(row["ranking_score"]),
+                            "affinity_score": float(row["affinity_score"]),
+                            "cluster_avg_rating": float(row["cluster_avg_rating"]),
+                            "cluster_num_ratings": int(float(row["cluster_num_ratings"])),
+                            "rank": int(row["rank"]),
+                        }
+                    )
 
         recommendations = {user_id: sorted(items, key=lambda item: item["rank"]) for user_id, items in grouped.items()}
         self._cluster_recommendations_cache[k_value] = recommendations
@@ -505,13 +609,22 @@ class RecommendationService:
         if self._lab10_cache is not None:
             return self._lab10_cache
 
-        path = self.output_dir / f"recommendations_k{self.best_k}.json"
-        if not path.exists():
-            raise FileNotFoundError(
-                f"Archivo no encontrado: {path}. Ejecuta spark-kmeans-local.py primero."
-            )
-
-        raw: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        rel_path = f"output/recommendations_k{self.best_k}.json"
+        if self.gcs_client:
+            bucket = self.gcs_client.bucket(self.gcs_bucket_name)
+            blob = bucket.blob(rel_path)
+            if not blob.exists():
+                raise FileNotFoundError(
+                    f"Archivo no encontrado en GCS: {self.gcs_bucket_name}/{rel_path}. Ejecuta spark-kmeans-local.py y sube los resultados al bucket."
+                )
+            raw = json.loads(blob.download_as_text(encoding="utf-8"))
+        else:
+            path = self.output_dir / f"recommendations_k{self.best_k}.json"
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"Archivo no encontrado: {path}. Ejecuta spark-kmeans-local.py primero."
+                )
+            raw: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
         result: List[Dict[str, Any]] = []
 
         for user_id_str, items in raw.items():
@@ -584,15 +697,16 @@ class RecommendationHandler(BaseHTTPRequestHandler):
             return
 
         if route == "/health":
-            self._send_json(
-                HTTPStatus.OK,
-                {
-                    "status": "ok",
-                    "best_k": self.service.best_k,
-                    "movies_loaded": len(self.service.movies),
-                    "users_loaded": len(self.service.user_ratings),
-                },
-            )
+            health_payload = {
+                "status": "ok" if self.service.is_ready() else "degraded",
+                "best_k": self.service.best_k,
+                "movies_loaded": len(self.service.movies),
+                "users_loaded": len(self.service.user_ratings),
+            }
+            if not self.service.is_ready():
+                health_payload["init_error"] = self.service._init_error
+
+            self._send_json(HTTPStatus.OK, health_payload)
             return
 
         if route == "/movies":
@@ -602,6 +716,10 @@ class RecommendationHandler(BaseHTTPRequestHandler):
                 limit = int(limit_raw)
             except ValueError:
                 limit = 20
+            if not self.service.is_ready():
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": self.service._init_error})
+                return
+
             data = self.service.search_movies(query, limit=limit)
             self._send_json(HTTPStatus.OK, {"movies": data})
             return
@@ -609,8 +727,11 @@ class RecommendationHandler(BaseHTTPRequestHandler):
         # Lab 10 — GET /recommendations (todas las recomendaciones)
         if route == "/recommendations":
             try:
-                data = self.service.get_lab10_recommendations()
-                self._send_json(HTTPStatus.OK, data)
+                if not self.service.is_ready():
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": self.service._init_error})
+                else:
+                    data = self.service.get_lab10_recommendations()
+                    self._send_json(HTTPStatus.OK, data)
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
@@ -620,12 +741,15 @@ class RecommendationHandler(BaseHTTPRequestHandler):
         if match:
             user_id = int(match.group(1))
             try:
-                all_recs = self.service.get_lab10_recommendations()
-                user_data = next((u for u in all_recs if u["user_id"] == user_id), None)
-                if user_data is None:
-                    self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Usuario {user_id} no encontrado"})
+                if not self.service.is_ready():
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": self.service._init_error})
                 else:
-                    self._send_json(HTTPStatus.OK, user_data)
+                    all_recs = self.service.get_lab10_recommendations()
+                    user_data = next((u for u in all_recs if u["user_id"] == user_id), None)
+                    if user_data is None:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Usuario {user_id} no encontrado"})
+                    else:
+                        self._send_json(HTTPStatus.OK, user_data)
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
@@ -684,8 +808,16 @@ class RecommendationHandler(BaseHTTPRequestHandler):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MovieLens recommendation API")
-    parser.add_argument("--host", default=os.getenv("API_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("API_PORT", "8000")))
+
+    # Cloud Run and many container platforms provide the port in the `PORT` env var.
+    # Fall back to `API_PORT` for local compatibility, and to 8000 as default.
+    default_port = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))
+
+    # Default host should be 0.0.0.0 inside containers so the server is reachable.
+    default_host = os.getenv("HOST", os.getenv("API_HOST", "0.0.0.0"))
+
+    parser.add_argument("--host", default=default_host)
+    parser.add_argument("--port", type=int, default=default_port)
     parser.add_argument("--data-dir", default=os.getenv("DATA_DIR", str(DEFAULT_DATA_DIR)))
     parser.add_argument("--output-dir", default=os.getenv("OUTPUT_PATH", str(DEFAULT_OUTPUT_DIR)))
     return parser.parse_args()

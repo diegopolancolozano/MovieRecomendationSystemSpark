@@ -4,3 +4,4 @@
 # Si quieres ejecutar el pipeline Spark u otras características, instala PySpark.
 
 pyspark>=3.3.0
+google-cloud-storage>=2.0.0
